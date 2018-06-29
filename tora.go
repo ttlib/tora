@@ -14,9 +14,11 @@
 //
 // Author: Tong Zicheng
 // Date: 2018/6/25 11:43
-// Version: 1.1.1
-// Descript: struct tag:tora
-//			 struct help
+// Descript: Model transformation help tools destination to source.
+// 			 After this function, data is independent.
+//           The destination's data is owerridden with default values.
+//           Only support struct to struct or slice to slice.
+//			 Struct's tag is `tora: ""`
 
 package tora
 
@@ -24,25 +26,84 @@ import (
 	"reflect"
 	"fmt"
 	"errors"
+	"log"
 )
 
+// Print trans log
+const (
+	VERSION   = "1.3.1"
+	TAG_NAME  = "tora"
+	MAIN_FUNC = "ToraMain"
+
+	LOG_FLAG = true
+)
+
+// Read the tag or fields for the struct that implements this interface.
+type SelectTag interface {
+	ToraMain() bool
+}
+
+// src -> dst Read src's tag or field by default. After this function, data is independent.
+// The dst's data is owerridden with default values.
 func Trans(dst interface{}, src interface{}) (err error) {
 
-	errStr = []string{}
-
-	dstValue := reflect.ValueOf(dst)
-	dstMethod := dstValue.MethodByName("ToraMain")
-
-	srcValue := reflect.ValueOf(src)
-	srcMethod := srcValue.MethodByName("ToraMain")
+	// must be reflect.Ptr
+	dstValue := reflect.ValueOf(dst) // Ptr
+	srcValue := reflect.ValueOf(src) // Ptr
 
 	if dstValue.Kind() != reflect.Ptr || srcValue.Kind() != reflect.Ptr {
 		return errors.New("[err] It is not a pointer to struct! ")
 	}
 
+	dstValueElem := dstValue.Elem()
+	srcValueElem := srcValue.Elem()
+
+	// Is the slice.
+	if dstValueElem.Kind() == reflect.Slice && srcValueElem.Kind() == reflect.Slice {
+		// slice item type
+		_dstTypeElem := reflect.TypeOf(dst).Elem()
+		_srcTypeElem := reflect.TypeOf(src).Elem()
+
+		for i := 0; i < srcValueElem.Len(); i++ {
+			// struct
+			_dstValuePtr := reflect.New(_dstTypeElem.Elem())
+			_srcValuePtr := srcValueElem.Index(i).Addr()
+			err := process(_dstValuePtr, _srcValuePtr, _dstTypeElem, _srcTypeElem)
+			if err != nil {
+				return err
+			}
+			dstValueElem.Set(reflect.Append(dstValueElem, _dstValuePtr.Elem()))
+
+		}
+		// Is the struct.
+	} else if dstValueElem.Kind() == reflect.Struct && srcValueElem.Kind() == reflect.Struct {
+
+		dstType := reflect.TypeOf(dst)
+		srcType := reflect.TypeOf(src)
+		err := process(dstValue, srcValue, dstType, srcType)
+		if err != nil {
+			return err
+		}
+
+		// Other Type
+	} else {
+		return errors.New("[err] There's no right function! ")
+	}
+
+	return nil
+
+}
+
+// A single struct transformation process.
+func process(dstValue, srcValue reflect.Value, dstType, srcType reflect.Type) error {
+
+	dstMethod := dstValue.MethodByName(MAIN_FUNC)
+	srcMethod := srcValue.MethodByName(MAIN_FUNC)
+
 	args := make([]reflect.Value, 0)
 	var srcToraMain, dstToraMain = false, false
 
+	// Determine if the struct has MAIN_FUNC and get the return value.
 	if srcMethod.Kind() == reflect.Func {
 		srcToraMain = srcMethod.Call(args)[0].Bool()
 	}
@@ -51,73 +112,133 @@ func Trans(dst interface{}, src interface{}) (err error) {
 	}
 
 	if srcToraMain || dstToraMain == false && srcToraMain == false {
-		return process(dst, src, dstValue, srcValue)
+		// dst <- src  read SRC tag | default
+		return parse(dstValue, srcValue, dstType, srcType, false)
 	} else {
-		return process(src, dst, srcValue, dstValue)
+		// dst <- src read dst tag
+		return parse(dstValue, srcValue, dstType, srcType, true)
 	}
 }
 
-var masterTypeElem, slaveTypeElem reflect.Type
-var masterValueElem, slaveValueElem reflect.Value
+// Parse tag
+func parse(dstValue, srcValue reflect.Value, dstType, srcType reflect.Type, dstTag bool) (err error) {
 
-var errStr []string
+	srcTypeElem := srcType.Elem()
+	srcValueElem := srcValue.Elem()
 
-// process
-func process(slave, master interface{}, sValue, mValue reflect.Value) (err error) {
+	dstTypeElem := dstType.Elem()
+	dstValueElem := dstValue.Elem()
 
-	masterTypeElem = reflect.TypeOf(master).Elem()
-	masterValueElem = mValue.Elem()
-
-	slaveTypeElem = reflect.TypeOf(slave).Elem()
-	slaveValueElem = sValue.Elem()
-
-	// must be struct
-	if masterValueElem.Kind() != reflect.Struct || slaveValueElem.Kind() != reflect.Struct {
-		return errors.New("[err] Pointer doesn't point to struct! ")
+	// dst and src must be struct
+	if srcValueElem.Kind() != reflect.Struct || dstValueElem.Kind() != reflect.Struct {
+		return errors.New("[err] Pointer must be struct! ")
 	}
 
-	for i := 0; i < masterTypeElem.NumField(); i++ {
-		// get tag
-		tagName := masterTypeElem.Field(i).Tag.Get("tora")
-		// if struct have tag
-		if tagName != "" {
+	srcElemLen, dstElemLen := srcTypeElem.NumField(), dstTypeElem.NumField()
 
-			core(i, tagName, true)
+	var tagName = ""
+	var dstTagNames map[string]string
 
-		} else {
+	// Extract all dst's tags and value.
+	if dstTag {
+		dstTagNames = make(map[string]string)
+		for j := 0; j < dstElemLen; j++ {
 
-			core(i, masterTypeElem.Field(i).Name, false)
+			tagName = dstTypeElem.Field(j).Tag.Get(TAG_NAME)
+
+			switch tagName {
+			case "":
+			case "-":
+				break
+			default:
+				dstTagNames[tagName] = dstTypeElem.Field(j).Name
+			}
 
 		}
 	}
 
-	if len(errStr) > 0 {
-		return errors.New(fmt.Sprint(errStr))
+	// Iterate through all of the src's field.
+	for i := 0; i < srcElemLen; i++ {
+
+		if !dstTag {
+			// dst <- src  READ SRC tag
+			tagName = srcTypeElem.Field(i).Tag.Get(TAG_NAME)
+
+			switch tagName {
+			case "":
+				core(dstValueElem, srcValueElem, dstTypeElem, srcTypeElem,
+					i, srcTypeElem.Field(i).Name, 2)
+				break
+			case "-":
+				break
+			default:
+				// If tag has value use it.
+				core(dstValueElem, srcValueElem, dstTypeElem, srcTypeElem,
+					i, tagName, 1)
+			}
+
+		} else {
+			// dst <- src READ dst tag
+			// If dst's tag has value, find the src's fieldname with it's value else use the value of dst's fieldname.
+			if dstTagNames[srcTypeElem.Field(i).Name] != "" {
+
+				core(dstValueElem, srcValueElem, dstTypeElem, srcTypeElem,
+					i, dstTagNames[srcTypeElem.Field(i).Name], 3)
+
+			} else {
+
+				core(dstValueElem, srcValueElem, dstTypeElem, srcTypeElem,
+					i, srcTypeElem.Field(i).Name, 3)
+
+			}
+		}
 	}
+
 	return nil
 }
 
-func core(index int, fieldNameStr string, tag bool) {
+// Trans field
+func core(dstValueElem, srcValueElem reflect.Value, dstTypeElem, srcTypeElem reflect.Type,
+	srcIndex int, dstFieldNameStr string, tag int) {
 
-	slaveElemField, has := slaveTypeElem.FieldByName(fieldNameStr)
-	if has && masterTypeElem.Field(index).Type == slaveElemField.Type {
+	// model name
+	dstNameStr := dstTypeElem.Name()
+	srcNameStr := srcTypeElem.Name()
 
-		fieldName := slaveValueElem.FieldByName(fieldNameStr)
+	// err message
+	var errStr []string
+
+	dstElemField, has := dstTypeElem.FieldByName(dstFieldNameStr) // Get Field
+	if has && srcTypeElem.Field(srcIndex).Type == dstElemField.Type {
+
+		fieldName := dstValueElem.FieldByName(dstFieldNameStr)
+
+		// Field is valid and can be set
 		if fieldName.IsValid() && fieldName.CanSet() {
-			fieldName.Set(masterValueElem.Field(index))
+			fieldName.Set(srcValueElem.Field(srcIndex))
 		} else {
-			errStr = append(errStr, fmt.Sprintf("[err] '%s' field is invalid or can't be set! \n", fieldNameStr))
+			errStr = append(errStr, fmt.Sprintf("[warn] '%s-%s' field is invalid or can't be set!", dstNameStr, dstFieldNameStr))
 		}
 
 	} else {
 
-		if tag {
-			// tag
-			errStr = append(errStr, fmt.Sprintf("[err] '%s' tag name don't exist or some of error! \n", fieldNameStr))
-		} else {
-			// field
-			errStr = append(errStr, fmt.Sprintf("[err] '%s' field don't exist or some of error! \n", fieldNameStr))
+		// Wrong type，1 - src tag wrong, 2 - src filed name wrong, 3 - dst tag wrong
+		switch tag {
+		case 1:
+			errStr = append(errStr, fmt.Sprintf("[warn] '%s-%s' tag name don't exist or have some error!", srcTypeElem, dstFieldNameStr))
+			break
+		case 2:
+			errStr = append(errStr, fmt.Sprintf("[warn] '%s-%s' field don't exist or have some error!", srcNameStr, dstFieldNameStr))
+			break
+		case 3:
+			errStr = append(errStr, fmt.Sprintf("[warn] (dst) '%s-%s' fields or tags hava some error!", dstNameStr, dstFieldNameStr))
+			break
 		}
 
+	}
+
+	if len(errStr) > 0 && LOG_FLAG {
+		// return errors.New(fmt.Sprint(errStr))
+		log.Println(errStr)
 	}
 }
