@@ -31,7 +31,7 @@ import (
 
 // Print trans log
 const (
-	VERSION   = "1.3.1"
+	VERSION   = "1.4.0"
 	TAG_NAME  = "tora"
 	MAIN_FUNC = "ToraMain"
 
@@ -58,25 +58,53 @@ func Trans(dst interface{}, src interface{}) (err error) {
 	dstValueElem := dstValue.Elem()
 	srcValueElem := srcValue.Elem()
 
-	// Is the slice.
-	if dstValueElem.Kind() == reflect.Slice && srcValueElem.Kind() == reflect.Slice {
-		// slice item type
-		_dstTypeElem := reflect.TypeOf(dst).Elem()
-		_srcTypeElem := reflect.TypeOf(src).Elem()
+	dstType := reflect.TypeOf(dst).Elem()
+	srcType := reflect.TypeOf(src).Elem()
 
-		for i := 0; i < srcValueElem.Len(); i++ {
-			// struct
-			_dstValuePtr := reflect.New(_dstTypeElem.Elem())
-			_srcValuePtr := srcValueElem.Index(i).Addr()
-			err := process(_dstValuePtr, _srcValuePtr, _dstTypeElem, _srcTypeElem)
-			if err != nil {
-				return err
+	// Is the slice.
+	if dstType.Kind() == reflect.Slice && srcType.Kind() == reflect.Slice {
+		// slice item is ptr
+		if dstType.Elem().Kind() == reflect.Ptr && srcType.Elem().Kind() == reflect.Ptr {
+
+			// Create a new ptr of dst's element.
+			_dstElemType := reflect.TypeOf(dst).Elem().Elem()
+			_srcElemType := reflect.TypeOf(src).Elem().Elem()
+
+			for i := 0; i < srcValueElem.Len(); i++ {
+				_dstValuePtr := reflect.New(_dstElemType.Elem())
+				_srcValuePtr := srcValueElem.Index(i)
+
+
+				err := process(_dstValuePtr, _srcValuePtr, _dstElemType, _srcElemType)
+				if err != nil {
+					return err
+				}
+
+				dstValueElem.Set(reflect.Append(dstValueElem, _dstValuePtr))
 			}
-			dstValueElem.Set(reflect.Append(dstValueElem, _dstValuePtr.Elem()))
+
+		}
+
+		// slice item is struct
+		if dstType.Elem().Kind() == reflect.Struct && srcType.Elem().Kind() == reflect.Struct {
+
+			_dstElemType := reflect.TypeOf(dst).Elem()
+			_srcElemType := reflect.TypeOf(src).Elem()
+
+			for i := 0; i < srcValueElem.Len(); i++ {
+				// struct
+				_dstValuePtr := reflect.New(_dstElemType.Elem())
+				_srcValuePtr := srcValueElem.Index(i).Addr()
+				err := process(_dstValuePtr, _srcValuePtr, _dstElemType, _srcElemType)
+				if err != nil {
+					return err
+				}
+				dstValueElem.Set(reflect.Append(dstValueElem, _dstValuePtr.Elem()))
+			}
 
 		}
 		// Is the struct.
-	} else if dstValueElem.Kind() == reflect.Struct && srcValueElem.Kind() == reflect.Struct {
+	} else if dstType.Kind() == reflect.Struct && srcType.Kind() == reflect.Struct {
 
 		dstType := reflect.TypeOf(dst)
 		srcType := reflect.TypeOf(src)
