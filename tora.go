@@ -48,34 +48,37 @@ type SelectTag interface {
 func Trans(dst interface{}, src interface{}) (err error) {
 
 	// must be reflect.Ptr
-	dstValue := reflect.ValueOf(dst) // Ptr
-	srcValue := reflect.ValueOf(src) // Ptr
+	dstValue := reflect.ValueOf(dst) // ptr
+	srcValue := reflect.ValueOf(src) // ptr
 
 	if dstValue.Kind() != reflect.Ptr || srcValue.Kind() != reflect.Ptr {
 		return errors.New("[err] It is not a pointer to struct! ")
 	}
 
-	dstValueElem := dstValue.Elem()
+	dstValueElem := dstValue.Elem() // []*slice or struct
 	srcValueElem := srcValue.Elem()
 
-	dstType := reflect.TypeOf(dst).Elem()
-	srcType := reflect.TypeOf(src).Elem()
+	dstType := reflect.TypeOf(dst) // ptr
+	srcType := reflect.TypeOf(src)
+
+	dstTypeElem := dstType.Elem() // []*slice or struct
+	srcTypeElem := srcType.Elem()
 
 	// Is the slice.
-	if dstType.Kind() == reflect.Slice && srcType.Kind() == reflect.Slice {
-		// slice item is ptr
-		if dstType.Elem().Kind() == reflect.Ptr && srcType.Elem().Kind() == reflect.Ptr {
+	if dstTypeElem.Kind() == reflect.Slice && srcTypeElem.Kind() == reflect.Slice {
 
-			// Create a new ptr of dst's element.
-			_dstElemType := reflect.TypeOf(dst).Elem().Elem()
-			_srcElemType := reflect.TypeOf(src).Elem().Elem()
+		dstElemTypePtr := dstTypeElem.Elem() // ptr of []*slice[i]
+		srcElemTypePtr := srcTypeElem.Elem()
+
+		// slice item is ptr
+		if dstElemTypePtr.Kind() == reflect.Ptr && srcElemTypePtr.Kind() == reflect.Ptr {
 
 			for i := 0; i < srcValueElem.Len(); i++ {
-				_dstValuePtr := reflect.New(_dstElemType.Elem())
+				// Create a new ptr of dst's element.
+				_dstValuePtr := reflect.New(dstElemTypePtr.Elem())
 				_srcValuePtr := srcValueElem.Index(i)
 
-
-				err := process(_dstValuePtr, _srcValuePtr, _dstElemType, _srcElemType)
+				err := process(_dstValuePtr, _srcValuePtr, dstElemTypePtr, srcElemTypePtr)
 				if err != nil {
 					return err
 				}
@@ -86,28 +89,25 @@ func Trans(dst interface{}, src interface{}) (err error) {
 		}
 
 		// slice item is struct
-		if dstType.Elem().Kind() == reflect.Struct && srcType.Elem().Kind() == reflect.Struct {
-
-			_dstElemType := reflect.TypeOf(dst).Elem()
-			_srcElemType := reflect.TypeOf(src).Elem()
+		if dstElemTypePtr.Kind() == reflect.Struct && srcElemTypePtr.Kind() == reflect.Struct {
 
 			for i := 0; i < srcValueElem.Len(); i++ {
 				// struct
-				_dstValuePtr := reflect.New(_dstElemType.Elem())
+				_dstValuePtr := reflect.New(dstElemTypePtr)
 				_srcValuePtr := srcValueElem.Index(i).Addr()
-				err := process(_dstValuePtr, _srcValuePtr, _dstElemType, _srcElemType)
+
+				err := process(_dstValuePtr, _srcValuePtr, dstTypeElem, srcTypeElem)
 				if err != nil {
 					return err
 				}
+
 				dstValueElem.Set(reflect.Append(dstValueElem, _dstValuePtr.Elem()))
 			}
 
 		}
 		// Is the struct.
-	} else if dstType.Kind() == reflect.Struct && srcType.Kind() == reflect.Struct {
+	} else if dstTypeElem.Kind() == reflect.Struct && srcTypeElem.Kind() == reflect.Struct {
 
-		dstType := reflect.TypeOf(dst)
-		srcType := reflect.TypeOf(src)
 		err := process(dstValue, srcValue, dstType, srcType)
 		if err != nil {
 			return err
@@ -129,17 +129,17 @@ func process(dstValue, srcValue reflect.Value, dstType, srcType reflect.Type) er
 	srcMethod := srcValue.MethodByName(MAIN_FUNC)
 
 	args := make([]reflect.Value, 0)
-	var srcToraMain, dstToraMain = false, false
+	var srcToraMainRes, dstToraMainRes = false, false
 
 	// Determine if the struct has MAIN_FUNC and get the return value.
 	if srcMethod.Kind() == reflect.Func {
-		srcToraMain = srcMethod.Call(args)[0].Bool()
+		srcToraMainRes = srcMethod.Call(args)[0].Bool()
 	}
 	if dstMethod.Kind() == reflect.Func {
-		dstToraMain = dstMethod.Call(args)[0].Bool()
+		dstToraMainRes = dstMethod.Call(args)[0].Bool()
 	}
 
-	if srcToraMain || dstToraMain == false && srcToraMain == false {
+	if srcToraMainRes || dstToraMainRes == false && srcToraMainRes == false {
 		// dst <- src  read SRC tag | default
 		return parse(dstValue, srcValue, dstType, srcType, false)
 	} else {
@@ -239,11 +239,12 @@ func core(dstValueElem, srcValueElem reflect.Value, dstTypeElem, srcTypeElem ref
 	dstElemField, has := dstTypeElem.FieldByName(dstFieldNameStr) // Get Field
 	if has && srcTypeElem.Field(srcIndex).Type == dstElemField.Type {
 
-		fieldName := dstValueElem.FieldByName(dstFieldNameStr)
+		dstFieldName := dstValueElem.FieldByName(dstFieldNameStr)
 
 		// Field is valid and can be set
-		if fieldName.IsValid() && fieldName.CanSet() {
-			fieldName.Set(srcValueElem.Field(srcIndex))
+		if dstFieldName.IsValid() && dstFieldName.CanSet() {
+			dstFieldValue := srcValueElem.Field(srcIndex)
+			dstFieldName.Set(dstFieldValue)
 		} else {
 			errStr = append(errStr, fmt.Sprintf("[warn] '%s-%s' field is invalid or can't be set!", dstNameStr, dstFieldNameStr))
 		}
